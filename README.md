@@ -65,11 +65,35 @@ Threshold: with the guard in place, z-scores across the dataset (excluding the e
 
 Result: 51 rows flagged (of 3,040 rows with a trustworthy baseline, ~1.7%). Spot-checked several — genuine, sustained spikes with an established baseline behind them, not artifacts of the window being too thin.
 
+Considerations for production
+Reusability and modularity
+
+The anomaly rule is written as a function, detect_anomaly(metric_column, min_history_days=14, z_threshold=3), rather than a one-off query hardcoded to reach_users. The SQL is built from an f-string that substitutes in the target column, so extending coverage to a new metric is a function call, not a copy-pasted block. I tested this directly during development — calling detect_anomaly('sessions_total') against the same dataset returned 44 flagged rows, a genuinely different result from the 51 rows reach_users produces, confirming the function performs independent analysis per metric rather than returning a cached or coincidental result.
+
+The final alerts_df in this submission only includes reach_users anomalies, scoped this way given the time available. Given more time, I'd extend coverage to sessions_total and session_mean_seconds using the same function, and union their results into alerts_df alongside the existing five rules.
+
+Automated pipeline integration
+
+This notebook is structured as a batch job: read the source data, run each rule, assemble alerts_df. Running it in production would mean:
+
+Scheduling it to run daily, matching the grain of app_daily_metrics, reading whatever new data has landed since the last run.
+Writing alerts_df to a table (e.g. fct_alerts in the architecture from Task 2) rather than displaying it in a notebook cell.
+Connecting it to the lifecycle logic in alert_status_log: each day's run should only ever append new alerts to fct_alerts, never regenerate or overwrite. Whether an alert is still active is a separate question, answered by looking at the latest row in alert_status_log for that alert_id — a closed alert shouldn't reappear just because the underlying condition is technically still true on a later day.
+Each of the five rules is already independent and returns the same schema, so adding a sixth rule, or changing one rule's threshold, doesn't require touching the others — the pipeline can grow incrementally.
+Adapting over time (seasonality, growth, promo weeks)
+
+The anomaly rule's rolling window partially self-corrects for gradual growth: as older, lower values roll out of the 28-day window and newer, higher ones roll in, the baseline moves with the trend rather than staying fixed. This is a genuine strength of the rolling-window approach over a fixed historical average.
+
+What it doesn't handle is a known, deliberate event — a promo week, a marketing push, a planned traffic spike. Two problems follow from that: the spike itself gets flagged as an anomaly (correct, in isolation, but not useful if the business already knows about it), and the elevated days then sit inside the rolling window used to judge the days immediately after, temporarily distorting what counts as "normal" in the following weeks.
+
+The fix I'd build, given more time: a promo/known-events calendar table (app_id, date_range, event_name), joined against the rolling window calculation so that days inside a known event are excluded from the baseline calculation while still being visible in the dashboard as data points. The anomaly detection stays honest about what's actually unusual, without needing to be manually paused during every planned event.
+
 Known limitations
-The anomaly check only covers reach_users. The same rolling z-score pattern could be applied to sessions_total and session_mean_seconds, which I'd extend given more time.
+The anomaly check's live alerts only cover reach_users, though the detection logic itself is written as a reusable function (see "Considerations for production" above) and has been tested against sessions_total.
 The 28-day window and 14-day minimum-history requirement are reasonable defaults, not values tuned against a longer history than this dataset provides. In production I'd revisit both once more historical data accumulates.
 No load timestamp is available in this dataset, so I can't distinguish "row arrived late" from "row is missing entirely." The completeness check catches full absence but not late arrival.
 All thresholds (4% duration tolerance, 0.15–1.65 median/mean range, ±3 z-score) were derived by inspecting this dataset's own distribution, not agreed with a business stakeholder. In a live setting I'd confirm each with whoever owns the source data before relying on them for alerting.
+
 How to run
 Place app_daily_metrics.csv in the same folder as the notebook.
 Run all cells top to bottom (Kernel → Restart & Run All is the cleanest check — confirms nothing depends on stale in-memory state from earlier exploration).
