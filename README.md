@@ -1,4 +1,5 @@
 App Daily Metrics — Monitoring & Alerting
+
 What this does
 
 This notebook checks app_daily_metrics.csv for three kinds of problems — missing data, internally inconsistent data, and statistically unusual data — and produces a single alerts_df table listing anything that fired. Each row in alerts_df follows the same schema, so a downstream dashboard can filter, sort, and display alerts from any of the five rules without needing to know which one produced them.
